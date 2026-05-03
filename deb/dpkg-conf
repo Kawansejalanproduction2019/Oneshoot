@@ -1,0 +1,8 @@
+Package: oneshot
+Architecture: all
+Maintainer: Rem01Gaming x kawansejalan
+Installed-Size: 650
+Version: 1.1.0
+Homepage: 
+Depends: python, pixiewps, wpa-supplicant, tsu, iw
+Description: Run WPS PIN attacks (Pixie Dust and bruteforce) without monitor mode with wpa_supplicant
