@@ -403,12 +403,14 @@ class BruteforceStatus:
 
 class Companion:
     """Main application part"""
-    def __init__(self, interface, save_result=False, print_debug=False, max_deauth_retries=3):
+    def __init__(self, interface, save_result=False, print_debug=False, max_deauth_retries=3, delay=None):
         self.interface = interface
         self.save_result = save_result
         self.print_debug = print_debug
         self.max_deauth_retries = max_deauth_retries
         self.deauth_retries = 0
+        self.delay = delay   # simpan delay untuk digunakan nanti
+        # sisanya tetap sama
 
         self.tempdir = tempfile.mkdtemp()
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as temp:
@@ -696,8 +698,10 @@ class Companion:
         return False
 
     def single_connection(self, bssid=None, pin=None, pixiemode=False, pbc_mode=False,
-                      showpixiecmd=False, pixieforce=False, store_pin_on_fail=False):
-        # Reset counter retry untuk target baru
+                          showpixiecmd=False, pixieforce=False, store_pin_on_fail=False,
+                          delay=None):
+        if delay is not None:
+            self.delay = delay
         self.deauth_retries = 0
 
         while True:
@@ -755,7 +759,7 @@ class Companion:
                     continue
                 else:
                     print('[!] Pixiewps gagal mendapatkan PIN.')
-                    return False
+                    return self.smart_bruteforce(bssid, start_pin=None, delay=self.delay, interactive=False)
 
             # Jika terjadi NACK atau FAIL dan deauth diaktifkan
             elif self.connection_status.status in ('WSC_NACK', 'WPS_FAIL') and self.max_deauth_retries > 0:
@@ -823,21 +827,23 @@ class Companion:
                 time.sleep(delay)
         return False
 
-    def smart_bruteforce(self, bssid, start_pin=None, delay=None):
+    def smart_bruteforce(self, bssid, start_pin=None, delay=None, interactive=True):
         if (not start_pin) or (len(start_pin) < 4):
-            # Trying to restore previous session
             try:
                 filename = self.sessions_dir + '{}.run'.format(bssid.replace(':', '').upper())
                 with open(filename, 'r') as file:
-                    if input('[?] Restore previous session for {}? [n/Y] '.format(bssid)).lower() != 'n':
-                        mask = file.readline().strip()
+                    if interactive:
+                        if input('[?] Restore previous session for {}? [n/Y] '.format(bssid)).lower() != 'n':
+                            mask = file.readline().strip()
+                        else:
+                            raise FileNotFoundError
                     else:
-                        raise FileNotFoundError
+                        # Non-interactive: langsung pakai mask dari file
+                        mask = file.readline().strip()
             except FileNotFoundError:
                 mask = '0000'
         else:
             mask = start_pin[:7]
-
         try:
             self.bruteforce = BruteforceStatus()
             self.bruteforce.mask = mask
@@ -856,8 +862,8 @@ class Companion:
             with open(filename, 'w') as file:
                 file.write(self.bruteforce.mask)
             print('[i] Session saved in {}'.format(filename))
-            if args.loop:
-                raise KeyboardInterrupt
+            raise KeyboardInterrupt
+               
 
     def cleanup(self):
         self.retsock.close()
@@ -984,8 +990,10 @@ class WiFiScanner:
                 if res:
                     handler(line, res, networks)
 
-        # Filtering non-WPS networks
-        networks = list(filter(lambda x: bool(x['WPS']), networks))
+        # Ganti baris filter
+        if not args.scan_all:
+            networks = list(filter(lambda x: bool(x['WPS']), networks))
+        # Jika --scan-all, tampilkan semua
         if not networks:
             return False
 
@@ -1142,6 +1150,11 @@ if __name__ == '__main__':
         help='Name of the interface to use'
         )
     parser.add_argument(
+        '--scan-all',
+        action='store_true',
+        help='Show all APs, not only those with WPS'
+        )
+    parser.add_argument(
         '-b', '--bssid',
         type=str,
         help='BSSID of the target AP'
@@ -1248,7 +1261,7 @@ if __name__ == '__main__':
     while True:
         try:
             companion = Companion(args.interface, args.write, print_debug=args.verbose,
-                                  max_deauth_retries=args.deauth_attempts)
+                                  max_deauth_retries=args.deauth_attempts, delay=args.delay)
             if args.pbc:
                 companion.single_connection(pbc_mode=True)
             else:
@@ -1263,14 +1276,12 @@ if __name__ == '__main__':
                         print('[*] BSSID not specified (--bssid) — scanning for available networks')
                     args.bssid = scanner.prompt_network()
 
-                if args.bssid:
-                    companion = Companion(args.interface, args.write, print_debug=args.verbose,
-                                          max_deauth_retries=args.deauth_attempts)
+                if args.bssid:                  
                     if args.bruteforce:
                         companion.smart_bruteforce(args.bssid, args.pin, args.delay)
                     else:
                         companion.single_connection(args.bssid, args.pin, args.pixie_dust,
-                                                    args.show_pixie_cmd, args.pixie_force)
+                                                    args.show_pixie_cmd, args.pixie_force, delay=args.delay)
             if not args.loop:
                 break
             else:
