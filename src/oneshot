@@ -1047,14 +1047,14 @@ class WiFiScanner:
         for n, network in network_list_items:
             number = f'{n})'
             model = '{} {}'.format(network['Model'], network['Model number'])
-            essid = truncateStr(network['ESSID'], 25)
+            essid = truncateStr(network.get('ESSID', '(Hidden)'), 25)
             deviceName = truncateStr(network['Device name'], 27)
             line = '{:<4} {:<18} {:<25} {:<8} {:<4} {:<27} {:<}'.format(
                 number, network['BSSID'], essid,
                 network['Security type'], network['Level'],
                 deviceName, model
                 )
-            if (network['BSSID'], network['ESSID']) in self.stored:
+            if (network['BSSID'], network.get('ESSID', '')) in self.stored:
                 print(colored(line, color='yellow'))
             elif network['WPS locked']:
                 print(colored(line, color='red'))
@@ -1066,21 +1066,28 @@ class WiFiScanner:
         return network_list
 
     def prompt_network(self) -> str:
-        networks = self.iw_scanner()
-        if not networks:
-            print('[-] No WPS networks found.')
-            return
-        while 1:
-            try:
-                networkNo = input('Select target (press Enter to refresh): ')
-                if networkNo.lower() in ('r', '0', ''):
-                    return self.prompt_network()
-                elif int(networkNo) in networks.keys():
-                    return networks[int(networkNo)]['BSSID']
-                else:
-                    raise IndexError
-            except Exception:
-                print('Invalid number')
+        while True:
+            networks = self.iw_scanner()
+            if not networks:
+                print('[-] No WPS networks found. Retrying in 3 seconds...')
+                time.sleep(3)
+                continue
+        
+            # Tampilkan daftar lagi (sudah dicetak oleh iw_scanner)
+            while True:
+                try:
+                    networkNo = input('Select target (press Enter to refresh): ')
+                    if networkNo.lower() in ('r', '0', ''):
+                        break  # keluar dari inner loop, lanjut ke scan ulang
+                    elif int(networkNo) in networks.keys():
+                        return networks[int(networkNo)]['BSSID']
+                    else:
+                        print('Invalid number')
+                except ValueError:
+                    print('Invalid input. Enter a number or press Enter to refresh.')
+                except Exception as e:
+                    print(f'Error: {e}')
+        
 
 
 def ifaceUp(iface, down=False):
