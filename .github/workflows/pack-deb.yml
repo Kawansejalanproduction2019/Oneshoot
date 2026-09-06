@@ -26,16 +26,9 @@ jobs:
       working-directory: ./
       run: bash .github/scripts/compile_deb.sh
 
-    - name: Upload to telegram
-      env:
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        COMMIT_URL: ${{ github.event.head_commit.url }}
-        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        TITLE: OneShot Termux DEB Package
-      run: |
-        if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-          export VERSION=$(git rev-list --count HEAD)
-          bash $GITHUB_WORKSPACE/.github/scripts/telegram_bot.sh ${{ steps.compile_deb.outputs.deb_out }}
-        fi
+    # (Opsional) Upload artifact ke GitHub Actions
+    - name: Upload DEB artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: oneshot-deb
+        path: ./*.deb
