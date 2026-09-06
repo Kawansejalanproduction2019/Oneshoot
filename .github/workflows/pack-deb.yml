@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      deb_path: ${{ steps.compile_deb.outputs.deb_out }}
+      deb_path: ${{ steps.find_deb.outputs.deb_path }}
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -42,15 +42,21 @@ jobs:
       id: compile_deb
       run: bash .github/scripts/compile_deb.sh
 
-    - name: Debug - Check if .deb exists
+    - name: Find .deb file
+      id: find_deb
       run: |
-        echo "deb_out value: ${{ steps.compile_deb.outputs.deb_out }}"
-        if [ -f "${{ steps.compile_deb.outputs.deb_out }}" ]; then
-          echo "✅ File exists!"
-          ls -la "${{ steps.compile_deb.outputs.deb_out }}"
+        echo "Current directory: $(pwd)"
+        echo "Listing all files and folders:"
+        ls -la
+        echo "Searching for .deb file in out folder..."
+        find out -name "*.deb" -type f
+        DEB_FILE=$(find out -name "*.deb" -type f | head -n 1)
+        if [ -n "$DEB_FILE" ]; then
+          echo "Found .deb file: $DEB_FILE"
+          echo "deb_out=$DEB_FILE" >> $GITHUB_OUTPUT
+          echo "deb_path=$DEB_FILE" >> $GITHUB_OUTPUT
         else
-          echo "❌ File NOT found! Listing current directory:"
-          ls -la
+          echo "❌ No .deb file found in out folder!"
           exit 1
         fi
 
@@ -58,8 +64,8 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: oneshot-deb
-        path: ${{ steps.compile_deb.outputs.deb_out }}
-        if-no-files-found: error   # Akan gagal jika file tidak ada
+        path: ${{ steps.find_deb.outputs.deb_path }}
+        if-no-files-found: error
 
   release:
     name: Create GitHub Release
@@ -82,7 +88,7 @@ jobs:
       run: |
         echo "Files in current directory:"
         ls -la
-        if [ -f *.deb ]; then
+        if ls *.deb 1> /dev/null 2>&1; then
           echo "✅ .deb file downloaded successfully"
         else
           echo "❌ No .deb file found after download!"
