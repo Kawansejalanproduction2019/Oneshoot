@@ -5,7 +5,6 @@ if [ -z $GITHUB_WORKSPACE ]; then
     exit 1
 fi
 
-# Make sure we're on right directory
 cd $GITHUB_WORKSPACE
 
 out="$GITHUB_WORKSPACE/out"
@@ -22,32 +21,51 @@ echo "Release code: $release_code"
 echo "Deb name: $deb_name"
 echo "Output directory: $out"
 
-# Clean and create directories
+# Bersihkan dan buat struktur folder
 rm -rf "$out"
 mkdir -v "$out"
 mkdir -v "$out/deb"
-mkdir -pv "$out/deb$termux_prefix"
-mkdir -pv "$out/deb$termux_prefix/share/oneshot"
 mkdir -pv "$out/deb$termux_prefix/bin"
+mkdir -pv "$out/deb$termux_prefix/share/oneshot"
+mkdir -pv "$out/deb/DEBIAN"
 
-# Copy files
-cp -v src/oneshot "$out/deb$termux_prefix/bin"
-cp -rv deb/share/* "$out/deb$termux_prefix/share/oneshot"
-cp -rv deb/dpkg-conf "$out/deb/DEBIAN"
+# === 1. Salin binary utama ===
+if [ -f "src/oneshot" ]; then
+    cp -v src/oneshot "$out/deb$termux_prefix/bin/"
+    chmod +x "$out/deb$termux_prefix/bin/oneshot"
+else
+    echo "❌ src/oneshot tidak ditemukan!"
+    exit 1
+fi
 
-# Set permissions
+# === 2. Salin semua file pendukung dari deb/ (kecuali dpkg-conf) ===
+for file in deb/*; do
+    if [ -f "$file" ] && [ "$(basename "$file")" != "dpkg-conf" ]; then
+        cp -v "$file" "$out/deb$termux_prefix/share/oneshot/"
+    fi
+done
+
+# === 3. Salin file kontrol dpkg-conf ke DEBIAN/control ===
+if [ -f "deb/dpkg-conf" ]; then
+    cp -v deb/dpkg-conf "$out/deb/DEBIAN/control"
+else
+    echo "❌ deb/dpkg-conf tidak ditemukan!"
+    exit 1
+fi
+
+# === 4. Set permission ===
 chmod -Rv 755 "$out/deb/DEBIAN"
 chmod -Rv 755 "$out/deb$termux_prefix/bin"
 
-# Update version in control file
-sed -i "s/^Version: .*/Version: $version.$version_code/" ./out/deb/DEBIAN/control
+# === 5. Update versi di control ===
+sed -i "s/^Version: .*/Version: $version.$version_code/" "$out/deb/DEBIAN/control"
 
-# Build the package
-cd $out/deb
+# === 6. Build package ===
+cd "$out/deb"
 echo "Building .deb package..."
 dpkg -b . "$GITHUB_WORKSPACE/$deb_name"
 
-# Check if file was created
+# === 7. Verifikasi ===
 if [ -f "$GITHUB_WORKSPACE/$deb_name" ]; then
     echo "✅ .deb file created successfully: $GITHUB_WORKSPACE/$deb_name"
     echo "deb_out=$GITHUB_WORKSPACE/$deb_name" >> $GITHUB_OUTPUT
