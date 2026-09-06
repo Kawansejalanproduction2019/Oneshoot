@@ -42,11 +42,24 @@ jobs:
       id: compile_deb
       run: bash .github/scripts/compile_deb.sh
 
+    - name: Debug - Check if .deb exists
+      run: |
+        echo "deb_out value: ${{ steps.compile_deb.outputs.deb_out }}"
+        if [ -f "${{ steps.compile_deb.outputs.deb_out }}" ]; then
+          echo "✅ File exists!"
+          ls -la "${{ steps.compile_deb.outputs.deb_out }}"
+        else
+          echo "❌ File NOT found! Listing current directory:"
+          ls -la
+          exit 1
+        fi
+
     - name: Upload DEB artifact
       uses: actions/upload-artifact@v4
       with:
         name: oneshot-deb
         path: ${{ steps.compile_deb.outputs.deb_out }}
+        if-no-files-found: error   # Akan gagal jika file tidak ada
 
   release:
     name: Create GitHub Release
@@ -64,6 +77,17 @@ jobs:
       with:
         name: oneshot-deb
         path: ./
+
+    - name: Debug - Check downloaded file
+      run: |
+        echo "Files in current directory:"
+        ls -la
+        if [ -f *.deb ]; then
+          echo "✅ .deb file downloaded successfully"
+        else
+          echo "❌ No .deb file found after download!"
+          exit 1
+        fi
 
     - name: Determine release type
       id: release_type
