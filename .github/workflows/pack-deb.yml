@@ -26,13 +26,17 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Get version
+    - name: Generate version
       id: version
       run: |
+        # Jika tag dimulai dengan 'v', pakai tag sebagai versi
         if [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref_name }}" == v* ]]; then
           VERSION="${{ github.ref_name }}"
         else
-          VERSION="$(git rev-list --count HEAD)"
+          # Jika push ke main (tanpa tag), pakai timestamp + commit count
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          TIMESTAMP=$(date +'%Y%m%d-%H%M%S')
+          VERSION="build-${TIMESTAMP}-${COMMIT_COUNT}"
         fi
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -51,7 +55,12 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Release dibuat jika:
+    # - Push tag v*
+    # - Push ke main (tanpa tag) -> akan dibuat pre-release
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.ref == 'refs/heads/main'
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -62,15 +71,24 @@ jobs:
         name: oneshot-deb-${{ needs.build.outputs.version }}
         path: ./
 
+    - name: Determine release type
+      id: release_type
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          echo "prerelease=false" >> $GITHUB_OUTPUT
+        else
+          echo "prerelease=true" >> $GITHUB_OUTPUT
+        fi
+
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         name: Release ${{ needs.build.outputs.version }}
         tag_name: ${{ needs.build.outputs.version }}
         draft: false
-        prerelease: false
+        prerelease: ${{ steps.release_type.outputs.prerelease == 'true' }}
         generate_release_notes: true
         files: |
           ${{ needs.build.outputs.deb_path }}
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ github.token }}
