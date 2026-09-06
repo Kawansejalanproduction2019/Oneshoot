@@ -38,25 +38,30 @@ jobs:
         fi
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+    - name: Debug - Check environment
+      run: |
+        echo "Checking dpkg version..."
+        dpkg --version || echo "dpkg not found!"
+        echo "Contents of .github/scripts/compile_deb.sh:"
+        cat .github/scripts/compile_deb.sh
+        echo "Current directory contents:"
+        ls -la
+
     - name: dpkg compile
       id: compile_deb
       run: bash .github/scripts/compile_deb.sh
 
-    - name: Find .deb file
+    - name: Find .deb file anywhere
       id: find_deb
       run: |
-        echo "Current directory: $(pwd)"
-        echo "Listing all files and folders:"
-        ls -la
-        echo "Searching for .deb file in out folder..."
-        find out -name "*.deb" -type f
-        DEB_FILE=$(find out -name "*.deb" -type f | head -n 1)
+        echo "Searching for .deb file in whole workspace..."
+        find . -name "*.deb" -type f
+        DEB_FILE=$(find . -name "*.deb" -type f | head -n 1)
         if [ -n "$DEB_FILE" ]; then
           echo "Found .deb file: $DEB_FILE"
-          echo "deb_out=$DEB_FILE" >> $GITHUB_OUTPUT
           echo "deb_path=$DEB_FILE" >> $GITHUB_OUTPUT
         else
-          echo "❌ No .deb file found in out folder!"
+          echo "❌ No .deb file found anywhere!"
           exit 1
         fi
 
