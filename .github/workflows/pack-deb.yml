@@ -1,4 +1,4 @@
-name: Build DEB Package
+name: Build DEB Package and Release
 
 on:
   workflow_dispatch:
@@ -10,25 +10,78 @@ on:
       - 'src/**'
       - 'deb/share/**'
       - 'deb/dpkg-conf/**'
+  # Release juga bisa dipicu oleh tag
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
     name: Build DEB package
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      deb_path: ${{ steps.compile_deb.outputs.deb_out }}
     steps:
     - name: Checkout
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
+    - name: Get version
+      id: version
+      run: |
+        # Jika ada tag, pakai tag; jika tidak, pakai commit count
+        if [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref_name }}" == v* ]]; then
+          VERSION=${{ github.ref_name }}
+        else
+          VERSION=$(git rev-list --count HEAD)
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
     - name: dpkg compile
       id: compile_deb
       working-directory: ./
-      run: bash .github/scripts/compile_deb.sh
+      run: |
+        bash .github/scripts/compile_deb.sh
+        # Asumsi script menghasilkan file .deb di root dengan nama oneshot-*.deb
+        DEB_FILE=$(ls *.deb | head -n 1)
+        echo "deb_out=$DEB_FILE" >> $GITHUB_OUTPUT
 
-    # (Opsional) Upload artifact ke GitHub Actions
     - name: Upload DEB artifact
       uses: actions/upload-artifact@v4
       with:
-        name: oneshot-deb
-        path: ./*.deb
+        name: oneshot-deb-${{ steps.version.outputs.version }}
+        path: ${{ steps.compile_deb.outputs.deb_out }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Hanya buat release jika:
+    # - Push tag (v*)
+    # - Atau workflow_dispatch dengan input "create_release" (opsional)
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download DEB artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: oneshot-deb-${{ needs.build.outputs.version }}
+        path: ./
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: Release ${{ needs.build.outputs.version }}
+        tag_name: ${{ needs.build.outputs.version }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        files: |
+          ${{ needs.build.outputs.deb_path }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
