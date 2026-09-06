@@ -29,5 +29,5 @@ sed -i "s/^Version: .*/Version: $version.$version_code/" ./out/deb/DEBIAN/contro
 
 cd $out/deb
 dpkg -b . "$GITHUB_WORKSPACE/$deb_name"
-echo "deb_out=$GITHUB_WORKSPACE/$deb_name" >>$GITHUB_OUTPUT
+echo "deb_out=$GITHUB_WORKSPACE/$deb_name" >> $GITHUB_OUTPUT
 	
