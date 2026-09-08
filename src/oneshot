@@ -1483,6 +1483,17 @@ if __name__ == '__main__':
     
     )
     parser.add_argument(
+        '--auto-handshake',
+        action='store_true',
+        help='Fallback to handshake capture + cracking if WPS fails'
+    )
+    parser.add_argument(
+        '--wordlist',
+        type=str,
+        default=None,
+        help='Path to wordlist for cracking'
+    )
+    parser.add_argument(
         '--evil-twin',
         action='store_true',
         help='Launch Evil Twin attack (clone AP + captive portal)'
